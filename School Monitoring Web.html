@@ -1,0 +1,852 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🏫 Assembly Attendance Tracker - Face Recognition</title>
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/react.production.min.js"></script>
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/react-dom.production.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.10.3/Recharts.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f3f4f6; }
+        .video-container { background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 4/3; position: relative; }
+        video { width: 100%; height: 100%; object-fit: cover; }
+        .student-card { transition: all 0.3s ease; }
+        .student-card:hover { transform: translateY(-2px); box-shadow: 0 10px 20px rgba(0,0,0,0.1); }
+        .btn-primary { background: linear-gradient(135deg, #3b82f6, #2563eb); color: white; padding: 10px 20px; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; transition: all 0.3s; }
+        .btn-primary:hover { transform: scale(1.02); box-shadow: 0 5px 15px rgba(59, 130, 246, 0.4); }
+        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+        .btn-success { background: linear-gradient(135deg, #10b981, #059669); color: white; padding: 10px 20px; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; transition: all 0.3s; }
+        .btn-success:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-danger { background: linear-gradient(135deg, #ef4444, #dc2626); color: white; padding: 10px 20px; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; transition: all 0.3s; }
+        .btn-secondary { background: #e5e7eb; color: #374151; padding: 10px 20px; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; transition: all 0.3s; }
+        .badge-working { background: #dcfce7; color: #166534; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+        .badge-notworking { background: #fee2e2; color: #991b1b; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+        .status-online { display: inline-flex; align-items: center; gap: 6px; background: #dcfce7; color: #166534; padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+        .status-offline { display: inline-flex; align-items: center; gap: 6px; background: #fee2e2; color: #991b1b; padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+        .input-field { width: 100%; padding: 10px 12px; border: 1px solid #e5e7eb; border-radius: 6px; font-size: 14px; transition: all 0.3s; }
+        .input-field:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1); }
+        .modal-backdrop { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+        .modal-content { background: white; border-radius: 12px; padding: 24px; max-width: 500px; width: 90%; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3); }
+        .spinner { display: inline-block; width: 20px; height: 20px; border: 3px solid rgba(59, 130, 246, 0.2); border-radius: 50%; border-top-color: #3b82f6; animation: spin 1s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .activity-timeline { border-left: 3px solid #3b82f6; padding-left: 16px; position: relative; }
+        .activity-item { margin-bottom: 20px; padding: 12px; background: #f9fafb; border-radius: 6px; position: relative; }
+        .activity-item::before { content: ''; position: absolute; left: -19px; top: 20px; width: 12px; height: 12px; background: #3b82f6; border-radius: 50%; border: 3px solid white; }
+        .face-box { position: absolute; border: 2px solid #10b981; border-radius: 4px; pointer-events: none; }
+        .face-label { position: absolute; background: rgba(16,185,129,0.9); color: white; font-size: 11px; font-weight: 600; padding: 2px 6px; border-radius: 3px; top: -20px; left: 0; white-space: nowrap; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+        const MODEL_URL = 'https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js-models@master';
+        const DB_NAME = 'AssemblyTrackerDB';
+        const DB_VERSION = 2;
+        const MATCH_THRESHOLD = 0.55; // lower = stricter match
+
+        // ---- small helpers ----
+        const sha256 = async (text) => {
+            const enc = new TextEncoder().encode(text);
+            const hash = await crypto.subtle.digest('SHA-256', enc);
+            return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+        };
+
+        const openDB = () => new Promise((resolve, reject) => {
+            const request = indexedDB.open(DB_NAME, DB_VERSION);
+            request.onupgradeneeded = (event) => {
+                const db = event.target.result;
+                if (!db.objectStoreNames.contains('students')) db.createObjectStore('students', { keyPath: 'id' });
+                if (!db.objectStoreNames.contains('activity')) db.createObjectStore('activity', { keyPath: 'id', autoIncrement: true });
+                if (!db.objectStoreNames.contains('settings')) db.createObjectStore('settings', { keyPath: 'key' });
+            };
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+        });
+
+        // ================= FILE:// GUARD =================
+        // IndexedDB and the camera (getUserMedia) are blocked by browsers when a page is
+        // opened directly by double-clicking the .html file (file:// origin). Without this
+        // check the app just hangs on a spinner forever with no explanation. Serving the
+        // same file over http://localhost fixes it instantly.
+        const ServeOverHttpNotice = () => (
+            <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)', padding: '20px' }}>
+                <div className="modal-content" style={{ maxWidth: '520px' }}>
+                    <h2 style={{ fontSize: '20px', fontWeight: 'bold', marginBottom: '12px' }}>⚠️ Ye file seedha (double-click se) nahi khulti</h2>
+                    <p style={{ fontSize: '14px', color: '#374151', marginBottom: '14px', lineHeight: 1.6 }}>
+                        Ye app IndexedDB (data save karne ke liye) aur camera use karta hai — browsers safety ki wajah se
+                        in dono ko <b>file://</b> se block kar dete hain jab aap seedha HTML file open karte hain (isi wajah se
+                        blank screen ya hamesha loading dikhti rehti hai). Isko chalane ke liye ek chhota sa local server
+                        chalana zaroori hai — sirf 1 baar ka kaam hai.
+                    </p>
+                    <p style={{ fontSize: '13px', fontWeight: '600', marginBottom: '6px' }}>Sabse aasan tareeqa (VS Code):</p>
+                    <ol style={{ fontSize: '13px', color: '#374151', marginBottom: '14px', paddingLeft: '20px', lineHeight: 1.7 }}>
+                        <li>VS Code mein ye folder kholein</li>
+                        <li>"Live Server" extension install karein</li>
+                        <li>Is file par right-click &rarr; <b>Open with Live Server</b></li>
+                    </ol>
+                    <p style={{ fontSize: '13px', fontWeight: '600', marginBottom: '6px' }}>Ya terminal se (agar Python installed hai):</p>
+                    <div style={{ background: '#111827', color: '#e5e7eb', padding: '10px 12px', borderRadius: '6px', fontSize: '12px', fontFamily: 'monospace', marginBottom: '14px' }}>
+                        cd is-folder-ka-path<br />python -m http.server 8000
+                    </div>
+                    <p style={{ fontSize: '13px', color: '#374151', marginBottom: '10px' }}>
+                        Phir browser mein <b>http://localhost:8000/Assembly-Tracker-v2.html</b> kholein — bas.
+                    </p>
+                    <p style={{ fontSize: '11px', color: '#9ca3af' }}>
+                        (Aap chahein to ye file kisi free hosting jaise GitHub Pages/Netlify par bhi daal sakte hain — wahan se khulna hamesha aasan rahega, camera bhi https ki wajah se aur reliably chalega.)
+                    </p>
+                </div>
+            </div>
+        );
+
+        // ================= LOGIN GATE =================
+        const LoginGate = ({ onUnlock }) => {
+            const [pinExists, setPinExists] = useState(null);
+            const [pin, setPin] = useState('');
+            const [confirmPin, setConfirmPin] = useState('');
+            const [error, setError] = useState('');
+            const [dbError, setDbError] = useState(false);
+
+            useEffect(() => {
+                (async () => {
+                    try {
+                        const db = await openDB();
+                        const tx = db.transaction('settings', 'readonly');
+                        const req = tx.objectStore('settings').get('adminPin');
+                        req.onsuccess = () => setPinExists(!!req.result);
+                        req.onerror = () => setPinExists(false);
+                    } catch (err) {
+                        console.error('DB open failed', err);
+                        setDbError(true);
+                    }
+                })();
+            }, []);
+
+            if (dbError) {
+                return (
+                    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }}>
+                        <div className="modal-content" style={{ maxWidth: '440px', textAlign: 'center' }}>
+                            <h2 style={{ fontSize: '18px', fontWeight: 'bold', marginBottom: '10px' }}>❌ Data storage access nahi ho saka</h2>
+                            <p style={{ fontSize: '13px', color: '#374151' }}>
+                                Browser ne is page ko storage istemal karne se rok diya hai. Agar aapne ye file seedha
+                                double-click karke kholi hai, to ise local server (jaise VS Code Live Server) ke zariye kholein,
+                                ya browser ki private/incognito mode band karke dobara try karein.
+                            </p>
+                        </div>
+                    </div>
+                );
+            }
+
+            const setupPin = async () => {
+                if (pin.length < 4) { setError('PIN kam az kam 4 digits ka ho.'); return; }
+                if (pin !== confirmPin) { setError('PIN match nahi ho raha.'); return; }
+                const hash = await sha256(pin);
+                const db = await openDB();
+                const tx = db.transaction('settings', 'readwrite');
+                tx.objectStore('settings').put({ key: 'adminPin', value: hash });
+                tx.oncomplete = () => onUnlock();
+            };
+
+            const checkPin = async () => {
+                const db = await openDB();
+                const tx = db.transaction('settings', 'readonly');
+                const req = tx.objectStore('settings').get('adminPin');
+                req.onsuccess = async () => {
+                    const hash = await sha256(pin);
+                    if (req.result && req.result.value === hash) {
+                        onUnlock();
+                    } else {
+                        setError('Galat PIN.');
+                    }
+                };
+            };
+
+            if (pinExists === null) {
+                return (
+                    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <div className="spinner"></div>
+                    </div>
+                );
+            }
+
+            return (
+                <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)' }}>
+                    <div className="modal-content" style={{ maxWidth: '380px' }}>
+                        <h2 style={{ fontSize: '22px', fontWeight: 'bold', marginBottom: '8px' }}>🏫 Assembly Tracker</h2>
+                        <p style={{ fontSize: '13px', color: '#6b7280', marginBottom: '20px' }}>
+                            {pinExists ? 'Admin PIN daalein' : 'Pehli baar setup — apna admin PIN banayein'}
+                        </p>
+                        <input
+                            type="password"
+                            inputMode="numeric"
+                            className="input-field"
+                            placeholder="PIN"
+                            value={pin}
+                            onChange={(e) => setPin(e.target.value)}
+                            style={{ marginBottom: '12px' }}
+                        />
+                        {!pinExists && (
+                            <input
+                                type="password"
+                                inputMode="numeric"
+                                className="input-field"
+                                placeholder="PIN dobara likhein"
+                                value={confirmPin}
+                                onChange={(e) => setConfirmPin(e.target.value)}
+                                style={{ marginBottom: '12px' }}
+                            />
+                        )}
+                        {error && <p style={{ color: '#dc2626', fontSize: '13px', marginBottom: '12px' }}>{error}</p>}
+                        <button className="btn-primary" style={{ width: '100%' }} onClick={pinExists ? checkPin : setupPin}>
+                            {pinExists ? 'Unlock' : 'PIN Set Karein'}
+                        </button>
+                        <p style={{ fontSize: '11px', color: '#9ca3af', marginTop: '14px' }}>
+                            Note: Ye PIN sirf is browser/device tak local protection deta hai — ye enterprise-grade
+                            multi-user server authentication nahi hai.
+                        </p>
+                    </div>
+                </div>
+            );
+        };
+
+        // ================= MAIN APP =================
+        const AssemblyTrackingApp = () => {
+            const [currentPage, setCurrentPage] = useState('dashboard');
+            const [students, setStudents] = useState([]);
+            const [isOnlineMode, setIsOnlineMode] = useState(navigator.onLine);
+            const [activityLog, setActivityLog] = useState([]);
+            const videoRef = useRef(null);
+            const canvasRef = useRef(null);
+            const overlayRef = useRef(null);
+            const [isMonitoring, setIsMonitoring] = useState(false);
+            const [recognizedStudents, setRecognizedStudents] = useState({});
+            const [newStudent, setNewStudent] = useState({ name: '', rollNo: '', class: '10-A', photo: null, descriptor: null });
+            const [showCamera, setShowCamera] = useState(false);
+            const [modelsLoaded, setModelsLoaded] = useState(false);
+            const [modelError, setModelError] = useState(false);
+            const [captureStatus, setCaptureStatus] = useState('');
+            const [cameraError, setCameraError] = useState('');
+            const [monitoringStats, setMonitoringStats] = useState({ total: 0, working: 0, notWorking: 0 });
+            const monitorIntervalRef = useRef(null);
+            const isMonitoringRef = useRef(false);
+
+            useEffect(() => {
+                loadInitialData();
+                loadFaceModels();
+                const goOnline = () => setIsOnlineMode(true);
+                const goOffline = () => setIsOnlineMode(false);
+                window.addEventListener('online', goOnline);
+                window.addEventListener('offline', goOffline);
+                return () => {
+                    window.removeEventListener('online', goOnline);
+                    window.removeEventListener('offline', goOffline);
+                    stopMonitoring();
+                };
+            }, []);
+
+            const loadFaceModels = async () => {
+                try {
+                    await Promise.all([
+                        faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+                        faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+                        faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
+                    ]);
+                    setModelsLoaded(true);
+                } catch (err) {
+                    console.error('Face model load failed', err);
+                    setModelError(true);
+                }
+            };
+
+            const loadInitialData = async () => {
+                const db = await openDB();
+                const studentsTx = db.transaction('students', 'readonly');
+                studentsTx.objectStore('students').getAll().onsuccess = (e) => setStudents(e.target.result || []);
+                const activityTx = db.transaction('activity', 'readonly');
+                activityTx.objectStore('activity').getAll().onsuccess = (e) => setActivityLog(e.target.result || []);
+            };
+
+            const saveStudentToDB = async (student) => {
+                const db = await openDB();
+                const tx = db.transaction('students', 'readwrite');
+                tx.objectStore('students').put(student);
+            };
+
+            const deleteStudentFromDB = async (id) => {
+                const db = await openDB();
+                const tx = db.transaction('students', 'readwrite');
+                tx.objectStore('students').delete(id);
+            };
+
+            const logActivity = async (studentId, status) => {
+                const now = new Date();
+                const entry = { studentId, status, timestamp: now.toLocaleTimeString(), date: now.toLocaleDateString(), day: now.toLocaleDateString('en-US', { weekday: 'long' }) };
+                const db = await openDB();
+                const tx = db.transaction('activity', 'readwrite');
+                const req = tx.objectStore('activity').add(entry);
+                req.onsuccess = (e) => {
+                    entry.id = e.target.result;
+                    setActivityLog(prev => [...prev, entry]);
+                };
+            };
+
+            const startCamera = async () => {
+                setCameraError('');
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ video: {} });
+                    if (videoRef.current) videoRef.current.srcObject = stream;
+                } catch (err) {
+                    setCameraError('Camera access nahi mil saka. Browser permissions check karein.');
+                }
+            };
+
+            const stopCameraStream = () => {
+                if (videoRef.current && videoRef.current.srcObject) {
+                    videoRef.current.srcObject.getTracks().forEach(track => track.stop());
+                    videoRef.current.srcObject = null;
+                }
+            };
+
+            const capturePhotoAndDescriptor = async () => {
+                const video = videoRef.current;
+                if (!video || !modelsLoaded) return;
+                setCaptureStatus('Chehra detect kar raha hoon...');
+                const detection = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions())
+                    .withFaceLandmarks().withFaceDescriptor();
+                if (!detection) {
+                    setCaptureStatus('❌ Koi chehra nahi mila. Camera ke saamne seedha dekhein aur dobara try karein.');
+                    return;
+                }
+                const canvas = canvasRef.current;
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                const photoData = canvas.toDataURL('image/jpeg');
+                setNewStudent(prev => ({ ...prev, photo: photoData, descriptor: Array.from(detection.descriptor) }));
+                setCaptureStatus('✅ Chehra capture ho gaya.');
+            };
+
+            const handleAddStudent = async () => {
+                if (!newStudent.name || !newStudent.rollNo || !newStudent.photo || !newStudent.descriptor) {
+                    alert('Naam, roll number, aur chehra capture — sab zaroori hai.');
+                    return;
+                }
+                if (students.length >= 32) {
+                    alert('Maximum 32 students limit reached!');
+                    return;
+                }
+                const id = Date.now().toString();
+                const student = { id, ...newStudent, enrollmentDate: new Date().toLocaleDateString() };
+                const updated = [...students, student];
+                setStudents(updated);
+                await saveStudentToDB(student);
+                setNewStudent({ name: '', rollNo: '', class: '10-A', photo: null, descriptor: null });
+                setCaptureStatus('');
+                setShowCamera(false);
+                stopCameraStream();
+                alert(`✅ ${student.name} add ho gaya/gayi!`);
+            };
+
+            const handleDeleteStudent = async (id) => {
+                if (window.confirm('Ye student delete karein?')) {
+                    setStudents(students.filter(s => s.id !== id));
+                    await deleteStudentFromDB(id);
+                }
+            };
+
+            // ---- real-time recognition ----
+            const buildFaceMatcher = () => {
+                const labeled = students
+                    .filter(s => s.descriptor)
+                    .map(s => new faceapi.LabeledFaceDescriptors(s.id, [Float32Array.from(s.descriptor)]));
+                if (labeled.length === 0) return null;
+                return new faceapi.FaceMatcher(labeled, MATCH_THRESHOLD);
+            };
+
+            const startMonitoring = async () => {
+                if (!modelsLoaded) { alert('Face recognition models abhi load ho rahe hain, thora intezaar karein.'); return; }
+                const matcher = buildFaceMatcher();
+                if (!matcher) { alert('Pehle kam az kam ek student enroll karein.'); return; }
+                setIsMonitoring(true);
+                isMonitoringRef.current = true;
+                await startCamera();
+                runRecognitionLoop(matcher);
+            };
+
+            const runRecognitionLoop = (matcher) => {
+                const loop = async () => {
+                    if (!isMonitoringRef.current) return;
+                    const video = videoRef.current;
+                    if (video && video.readyState === 4) {
+                        const detections = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions())
+                            .withFaceLandmarks().withFaceDescriptors();
+                        drawOverlay(detections, matcher, video);
+                        detections.forEach(d => {
+                            const match = matcher.findBestMatch(d.descriptor);
+                            if (match.label !== 'unknown') {
+                                const student = students.find(s => s.id === match.label);
+                                if (student) {
+                                    setRecognizedStudents(prev => {
+                                        const last = prev[student.id];
+                                        const nowTs = Date.now();
+                                        // avoid re-logging the same face every ~800ms; only log every 20s
+                                        if (last && nowTs - last._ts < 20000) return prev;
+                                        return { ...prev, [student.id]: { name: student.name, status: last ? last.status : 'unmarked', time: new Date().toLocaleTimeString(), _ts: nowTs } };
+                                    });
+                                }
+                            }
+                        });
+                    }
+                    monitorIntervalRef.current = setTimeout(loop, 700);
+                };
+                loop();
+            };
+
+            const drawOverlay = (detections, matcher, video) => {
+                const overlay = overlayRef.current;
+                if (!overlay) return;
+                overlay.innerHTML = '';
+                const scaleX = overlay.clientWidth / video.videoWidth;
+                const scaleY = overlay.clientHeight / video.videoHeight;
+                detections.forEach(d => {
+                    const box = d.detection.box;
+                    const match = matcher.findBestMatch(d.descriptor);
+                    const student = students.find(s => s.id === match.label);
+                    const div = document.createElement('div');
+                    div.className = 'face-box';
+                    div.style.left = (box.x * scaleX) + 'px';
+                    div.style.top = (box.y * scaleY) + 'px';
+                    div.style.width = (box.width * scaleX) + 'px';
+                    div.style.height = (box.height * scaleY) + 'px';
+                    const label = document.createElement('div');
+                    label.className = 'face-label';
+                    label.textContent = student ? student.name : 'Unknown';
+                    div.appendChild(label);
+                    overlay.appendChild(div);
+                });
+            };
+
+            const markStudent = (studentId, status) => {
+                setRecognizedStudents(prev => ({ ...prev, [studentId]: { ...prev[studentId], status } }));
+                logActivity(studentId, status);
+                setMonitoringStats(prev => ({
+                    total: prev.total + 1,
+                    working: prev.working + (status === 'working' ? 1 : 0),
+                    notWorking: prev.notWorking + (status === 'not_working' ? 1 : 0),
+                }));
+            };
+
+            const stopMonitoring = () => {
+                setIsMonitoring(false);
+                isMonitoringRef.current = false;
+                if (monitorIntervalRef.current) clearTimeout(monitorIntervalRef.current);
+                stopCameraStream();
+                if (overlayRef.current) overlayRef.current.innerHTML = '';
+            };
+
+            // ================= Dashboard =================
+            const Dashboard = () => {
+                const dayOrder = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+                const grouped = {};
+                activityLog.forEach(log => {
+                    const day = log.day || 'Unknown';
+                    if (!grouped[day]) grouped[day] = { working: 0, notWorking: 0 };
+                    if (log.status === 'working') grouped[day].working++;
+                    else grouped[day].notWorking++;
+                });
+                const weeklyData = dayOrder
+                    .filter(d => grouped[d])
+                    .map(day => ({ day, working: grouped[day].working, notWorking: grouped[day].notWorking }));
+
+                const totalWorking = activityLog.filter(l => l.status === 'working').length;
+                const totalLogs = activityLog.length;
+                const attendancePercentage = totalLogs > 0 ? Math.round((totalWorking / totalLogs) * 100) : 0;
+
+                return (
+                    <div style={{ padding: '24px' }}>
+                        <h2 style={{ fontSize: '28px', fontWeight: 'bold', marginBottom: '24px' }}>📊 Dashboard</h2>
+
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '16px', marginBottom: '32px' }}>
+                            <div style={{ background: '#eff6ff', padding: '20px', borderRadius: '8px', border: '1px solid #bfdbfe' }}>
+                                <p style={{ color: '#4b5563', fontSize: '14px' }}>Total Students Enrolled</p>
+                                <p style={{ fontSize: '32px', fontWeight: 'bold', color: '#2563eb', marginTop: '8px' }}>{students.length}/32</p>
+                            </div>
+                            <div style={{ background: '#f0fdf4', padding: '20px', borderRadius: '8px', border: '1px solid #bbf7d0' }}>
+                                <p style={{ color: '#4b5563', fontSize: '14px' }}>Overall "Working" Rate</p>
+                                <p style={{ fontSize: '32px', fontWeight: 'bold', color: '#16a34a', marginTop: '8px' }}>{attendancePercentage}%</p>
+                            </div>
+                            <div style={{ background: '#faf5ff', padding: '20px', borderRadius: '8px', border: '1px solid #e9d5ff' }}>
+                                <p style={{ color: '#4b5563', fontSize: '14px' }}>Current Status</p>
+                                <p style={{ fontSize: '18px', fontWeight: 'bold', marginTop: '8px' }}>{isOnlineMode ? '🟢 Online' : '🔴 Offline'}</p>
+                            </div>
+                        </div>
+
+                        <div style={{ background: 'white', padding: '24px', borderRadius: '8px', border: '1px solid #e5e7eb', marginBottom: '24px' }}>
+                            <h3 style={{ fontSize: '18px', fontWeight: 'bold', marginBottom: '16px' }}>📈 Activity By Day (actual logged data)</h3>
+                            {weeklyData.length === 0 ? (
+                                <p style={{ color: '#9ca3af', padding: '20px', textAlign: 'center' }}>Abhi tak koi activity record nahi. Monitoring shuru karein taake data yahan nazar aaye.</p>
+                            ) : (
+                                <div style={{ overflowX: 'auto' }}>
+                                    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                                        <thead>
+                                            <tr style={{ background: '#f3f4f6' }}>
+                                                <th style={{ padding: '12px', textAlign: 'left', borderBottom: '2px solid #e5e7eb' }}>Day</th>
+                                                <th style={{ padding: '12px', textAlign: 'center', borderBottom: '2px solid #e5e7eb' }}>✓ Working</th>
+                                                <th style={{ padding: '12px', textAlign: 'center', borderBottom: '2px solid #e5e7eb' }}>✗ Not Working</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {weeklyData.map((data, idx) => (
+                                                <tr key={idx} style={{ borderBottom: '1px solid #e5e7eb' }}>
+                                                    <td style={{ padding: '12px' }}>{data.day}</td>
+                                                    <td style={{ padding: '12px', textAlign: 'center' }}>
+                                                        <span style={{ background: '#dcfce7', color: '#166534', padding: '4px 8px', borderRadius: '4px', fontSize: '14px', fontWeight: '600' }}>{data.working}</span>
+                                                    </td>
+                                                    <td style={{ padding: '12px', textAlign: 'center' }}>
+                                                        <span style={{ background: '#fee2e2', color: '#991b1b', padding: '4px 8px', borderRadius: '4px', fontSize: '14px', fontWeight: '600' }}>{data.notWorking}</span>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
+                        </div>
+
+                        <div style={{ background: 'white', padding: '20px', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
+                            <h3 style={{ fontSize: '16px', fontWeight: 'bold', marginBottom: '16px' }}>Recent Activity Log</h3>
+                            <div className="activity-timeline" style={{ maxHeight: '300px', overflowY: 'auto' }}>
+                                {activityLog.slice(-8).reverse().map((log, idx) => {
+                                    const student = students.find(s => s.id === log.studentId);
+                                    return (
+                                        <div key={idx} className="activity-item">
+                                            <p style={{ fontWeight: '600', color: '#1f2937' }}>{student?.name || 'Unknown'}</p>
+                                            <p style={{ fontSize: '12px', color: '#6b7280' }}>
+                                                <span className={log.status === 'working' ? 'badge-working' : 'badge-notworking'} style={{ marginRight: '8px' }}>
+                                                    {log.status === 'working' ? '✓ Working' : '✗ Not Working'}
+                                                </span>
+                                                {log.timestamp}
+                                            </p>
+                                        </div>
+                                    );
+                                })}
+                                {activityLog.length === 0 && <p style={{ color: '#9ca3af', textAlign: 'center', padding: '20px' }}>Koi activity nahi hui abhi tak.</p>}
+                            </div>
+                        </div>
+                    </div>
+                );
+            };
+
+            // ================= Enrollment =================
+            const Enrollment = () => (
+                <div style={{ padding: '24px' }}>
+                    <h2 style={{ fontSize: '28px', fontWeight: 'bold', marginBottom: '24px' }}>📝 Student Enrollment</h2>
+
+                    {!modelsLoaded && !modelError && (
+                        <div style={{ background: '#fef9c3', border: '1px solid #fde68a', padding: '12px 16px', borderRadius: '8px', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                            <div className="spinner"></div>
+                            <span style={{ fontSize: '14px' }}>Face recognition models load ho rahe hain...</span>
+                        </div>
+                    )}
+                    {modelError && (
+                        <div style={{ background: '#fee2e2', border: '1px solid #fca5a5', padding: '12px 16px', borderRadius: '8px', marginBottom: '16px', fontSize: '14px' }}>
+                            ⚠️ Face recognition models load nahi ho saken (internet check karein). Enrollment ke liye ye zaroori hai.
+                        </div>
+                    )}
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
+                        <div style={{ background: 'white', padding: '24px', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
+                            <h3 style={{ fontSize: '18px', fontWeight: 'bold', marginBottom: '20px' }}>Add New Student ({students.length}/32)</h3>
+
+                            <div style={{ marginBottom: '16px' }}>
+                                <label style={{ display: 'block', fontSize: '14px', fontWeight: '600', marginBottom: '8px' }}>Student Name *</label>
+                                <input type="text" value={newStudent.name} onChange={(e) => setNewStudent({ ...newStudent, name: e.target.value })} className="input-field" placeholder="Full name" />
+                            </div>
+
+                            <div style={{ marginBottom: '16px' }}>
+                                <label style={{ display: 'block', fontSize: '14px', fontWeight: '600', marginBottom: '8px' }}>Roll Number *</label>
+                                <input type="text" value={newStudent.rollNo} onChange={(e) => setNewStudent({ ...newStudent, rollNo: e.target.value })} className="input-field" placeholder="e.g., 01, 02, 03..." />
+                            </div>
+
+                            <div style={{ marginBottom: '16px' }}>
+                                <label style={{ display: 'block', fontSize: '14px', fontWeight: '600', marginBottom: '8px' }}>Class *</label>
+                                <select value={newStudent.class} onChange={(e) => setNewStudent({ ...newStudent, class: e.target.value })} className="input-field">
+                                    <option>10-A</option><option>10-B</option><option>11-A</option><option>11-B</option><option>12-A</option><option>12-B</option>
+                                </select>
+                            </div>
+
+                            <div style={{ marginBottom: '16px' }}>
+                                <button
+                                    onClick={() => { const next = !showCamera; setShowCamera(next); setCaptureStatus(''); if (next) startCamera(); else stopCameraStream(); }}
+                                    className="btn-primary" style={{ width: '100%', marginBottom: '12px' }} disabled={!modelsLoaded}
+                                >
+                                    📷 {showCamera ? 'Close Camera' : 'Capture Photo'}
+                                </button>
+
+                                {showCamera && (
+                                    <div>
+                                        {cameraError && <p style={{ color: '#dc2626', fontSize: '13px', marginBottom: '8px' }}>{cameraError}</p>}
+                                        <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', borderRadius: '6px', marginBottom: '12px', background: '#000' }} />
+                                        <button onClick={capturePhotoAndDescriptor} className="btn-success" style={{ width: '100%' }}>📸 Take Photo</button>
+                                        {captureStatus && <p style={{ fontSize: '13px', marginTop: '8px', color: captureStatus.startsWith('❌') ? '#dc2626' : '#16a34a' }}>{captureStatus}</p>}
+                                    </div>
+                                )}
+                            </div>
+
+                            {newStudent.photo && (
+                                <div style={{ marginBottom: '16px' }}>
+                                    <img src={newStudent.photo} alt="Student" style={{ width: '100%', borderRadius: '6px', border: '2px solid #e5e7eb' }} />
+                                </div>
+                            )}
+
+                            <button onClick={handleAddStudent} className="btn-success" style={{ width: '100%', fontSize: '16px', padding: '12px' }}>
+                                ✅ Add Student
+                            </button>
+                        </div>
+
+                        <div style={{ background: 'white', padding: '24px', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
+                            <h3 style={{ fontSize: '18px', fontWeight: 'bold', marginBottom: '16px' }}>Enrolled Students</h3>
+                            <div style={{ fontSize: '14px', color: '#6b7280', marginBottom: '16px', fontWeight: '600' }}>{students.length}/32 students enrolled</div>
+                            <div style={{ maxHeight: '500px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                {students.map(student => (
+                                    <div key={student.id} className="student-card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px', background: '#f9fafb', borderRadius: '6px', border: '1px solid #e5e7eb' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1 }}>
+                                            {student.photo && <img src={student.photo} alt={student.name} style={{ width: '40px', height: '40px', borderRadius: '50%', objectFit: 'cover' }} />}
+                                            <div>
+                                                <p style={{ fontWeight: '600', color: '#1f2937' }}>{student.name}</p>
+                                                <p style={{ fontSize: '12px', color: '#6b7280' }}>Roll: {student.rollNo} | {student.class} {!student.descriptor && '⚠️ no face data'}</p>
+                                            </div>
+                                        </div>
+                                        <button onClick={() => handleDeleteStudent(student.id)} className="btn-danger" style={{ padding: '6px 12px', fontSize: '14px' }}>🗑️ Delete</button>
+                                    </div>
+                                ))}
+                                {students.length === 0 && <p style={{ textAlign: 'center', color: '#6b7280', padding: '20px' }}>No students enrolled yet</p>}
+                            </div>
+                        </div>
+                    </div>
+                    <canvas ref={canvasRef} style={{ display: 'none' }}></canvas>
+                </div>
+            );
+
+            // ================= Live Monitoring =================
+            const LiveMonitoring = () => (
+                <div style={{ padding: '24px' }}>
+                    <h2 style={{ fontSize: '28px', fontWeight: 'bold', marginBottom: '24px' }}>🎥 Live Monitoring</h2>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '24px', marginBottom: '24px' }}>
+                        <div className="video-container">
+                            <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                            <div ref={overlayRef} style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, pointerEvents: 'none' }}></div>
+                        </div>
+
+                        <div style={{ background: 'white', padding: '20px', borderRadius: '8px', border: '1px solid #e5e7eb', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                            <h3 style={{ fontSize: '16px', fontWeight: 'bold' }}>Control Panel</h3>
+
+                            {!isMonitoring ? (
+                                <button onClick={startMonitoring} className="btn-success" style={{ width: '100%', fontSize: '14px', padding: '12px' }} disabled={!modelsLoaded}>▶️ Start Monitoring</button>
+                            ) : (
+                                <button onClick={stopMonitoring} className="btn-danger" style={{ width: '100%', fontSize: '14px', padding: '12px' }}>⏹️ Stop Monitoring</button>
+                            )}
+                            {cameraError && <p style={{ color: '#dc2626', fontSize: '12px' }}>{cameraError}</p>}
+
+                            <div style={{ background: '#f0fdf4', padding: '12px', borderRadius: '6px', textAlign: 'center' }}>
+                                <p style={{ fontSize: '14px', fontWeight: '600' }}>Status: {isMonitoring ? '🔴 LIVE MONITORING' : '⚫ OFFLINE'}</p>
+                            </div>
+
+                            <div style={{ background: '#faf5ff', padding: '12px', borderRadius: '6px', textAlign: 'center' }}>
+                                <p style={{ fontSize: '13px', color: '#6b7280', marginBottom: '4px' }}>Marks Logged Today</p>
+                                <p style={{ fontSize: '22px', fontWeight: 'bold', color: '#9333ea' }}>{monitoringStats.total}</p>
+                            </div>
+
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                                <div style={{ background: '#dcfce7', padding: '12px', borderRadius: '6px', textAlign: 'center' }}>
+                                    <p style={{ fontSize: '12px', color: '#166534', fontWeight: '600' }}>✓ Working</p>
+                                    <p style={{ fontSize: '18px', fontWeight: 'bold', color: '#16a34a' }}>{monitoringStats.working}</p>
+                                </div>
+                                <div style={{ background: '#fee2e2', padding: '12px', borderRadius: '6px', textAlign: 'center' }}>
+                                    <p style={{ fontSize: '12px', color: '#991b1b', fontWeight: '600' }}>✗ Not Working</p>
+                                    <p style={{ fontSize: '18px', fontWeight: 'bold', color: '#dc2626' }}>{monitoringStats.notWorking}</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div style={{ background: 'white', padding: '20px', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
+                        <h3 style={{ fontSize: '16px', fontWeight: 'bold', marginBottom: '8px' }}>Recognized Now — Mark Status</h3>
+                        <p style={{ fontSize: '12px', color: '#6b7280', marginBottom: '16px' }}>
+                            Face recognition sirf ye batata hai ke kaun camera ke saamne hai. "Working / Not working" ka faisla teacher yahan tap kar ke record karta hai.
+                        </p>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '12px' }}>
+                            {Object.entries(recognizedStudents).map(([id, data]) => (
+                                <div key={id} style={{ padding: '12px', borderRadius: '6px', textAlign: 'center', background: '#f9fafb', border: '2px solid #e5e7eb' }}>
+                                    <p style={{ fontWeight: '600', fontSize: '13px', color: '#1f2937', marginBottom: '4px' }}>{data.name}</p>
+                                    <p style={{ fontSize: '11px', color: '#6b7280', marginBottom: '8px' }}>{data.time}</p>
+                                    <div style={{ display: 'flex', gap: '6px', justifyContent: 'center' }}>
+                                        <button onClick={() => markStudent(id, 'working')} className="btn-success" style={{ padding: '4px 8px', fontSize: '11px' }}>✓</button>
+                                        <button onClick={() => markStudent(id, 'not_working')} className="btn-danger" style={{ padding: '4px 8px', fontSize: '11px' }}>✗</button>
+                                    </div>
+                                </div>
+                            ))}
+                            {Object.keys(recognizedStudents).length === 0 && (
+                                <p style={{ gridColumn: '1/-1', textAlign: 'center', color: '#9ca3af', padding: '20px' }}>Monitoring start karein taake chehre yahan recognize hon.</p>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            );
+
+            // ================= Reports =================
+            const Reports = () => {
+                const generateWeeklyReport = () => {
+                    const report = students.map(student => {
+                        const activities = activityLog.filter(log => log.studentId === student.id);
+                        const workingCount = activities.filter(a => a.status === 'working').length;
+                        const notWorkingCount = activities.filter(a => a.status === 'not_working').length;
+                        const total = activities.length;
+                        const percentage = total > 0 ? Math.round((workingCount / total) * 100) : 0;
+                        return { name: student.name, rollNo: student.rollNo, working: workingCount, notWorking: notWorkingCount, total, percentage };
+                    });
+                    return report.sort((a, b) => b.percentage - a.percentage);
+                };
+
+                const weeklyReport = generateWeeklyReport();
+
+                const downloadCSV = () => {
+                    const csv = 'Name,Roll No,Working,Not Working,Total Activity,Performance %\n' +
+                        weeklyReport.map(r => `${r.name},${r.rollNo},${r.working},${r.notWorking},${r.total},${r.percentage}`).join('\n');
+                    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+                    const link = document.createElement('a');
+                    link.href = URL.createObjectURL(blob);
+                    link.download = `assembly-report-${new Date().toLocaleDateString().replace(/\//g, '-')}.csv`;
+                    link.click();
+                };
+
+                const downloadPDF = () => {
+                    const { jsPDF } = window.jspdf;
+                    const doc = new jsPDF();
+                    doc.setFontSize(16);
+                    doc.text('Assembly Attendance Report', 14, 18);
+                    doc.setFontSize(10);
+                    doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 25);
+                    doc.autoTable({
+                        startY: 32,
+                        head: [['Name', 'Roll No', 'Working', 'Not Working', 'Total', 'Performance %']],
+                        body: weeklyReport.map(r => [r.name, r.rollNo, r.working, r.notWorking, r.total, r.percentage + '%']),
+                        headStyles: { fillColor: [59, 130, 246] },
+                    });
+                    doc.save(`assembly-report-${new Date().toLocaleDateString().replace(/\//g, '-')}.pdf`);
+                };
+
+                return (
+                    <div style={{ padding: '24px' }}>
+                        <h2 style={{ fontSize: '28px', fontWeight: 'bold', marginBottom: '24px' }}>📈 Reports</h2>
+
+                        <div style={{ marginBottom: '24px', display: 'flex', gap: '12px' }}>
+                            <button onClick={downloadCSV} className="btn-primary" style={{ fontSize: '14px', padding: '10px 20px' }}>⬇️ Download CSV</button>
+                            <button onClick={downloadPDF} className="btn-secondary" style={{ fontSize: '14px', padding: '10px 20px' }}>📄 Download PDF</button>
+                        </div>
+
+                        <div style={{ background: 'white', padding: '20px', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
+                            <h3 style={{ fontSize: '16px', fontWeight: 'bold', marginBottom: '16px' }}>Student Activity Summary (from actual logged data)</h3>
+                            <div style={{ overflowX: 'auto' }}>
+                                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                                    <thead>
+                                        <tr style={{ background: '#f3f4f6', borderBottom: '2px solid #e5e7eb' }}>
+                                            <th style={{ padding: '12px', textAlign: 'left', fontWeight: '600' }}>Student Name</th>
+                                            <th style={{ padding: '12px', textAlign: 'center', fontWeight: '600' }}>Roll No</th>
+                                            <th style={{ padding: '12px', textAlign: 'center', fontWeight: '600' }}>✓ Working</th>
+                                            <th style={{ padding: '12px', textAlign: 'center', fontWeight: '600' }}>✗ Not Working</th>
+                                            <th style={{ padding: '12px', textAlign: 'center', fontWeight: '600' }}>Total Activity</th>
+                                            <th style={{ padding: '12px', textAlign: 'center', fontWeight: '600' }}>Performance</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {weeklyReport.map((report, idx) => (
+                                            <tr key={idx} style={{ borderBottom: '1px solid #e5e7eb', background: idx % 2 === 0 ? '#ffffff' : '#f9fafb' }}>
+                                                <td style={{ padding: '12px' }}><span style={{ fontWeight: '500', color: '#1f2937' }}>{report.name}</span></td>
+                                                <td style={{ padding: '12px', textAlign: 'center' }}>{report.rollNo}</td>
+                                                <td style={{ padding: '12px', textAlign: 'center' }}>
+                                                    <span style={{ background: '#dcfce7', color: '#166534', padding: '4px 8px', borderRadius: '4px', fontSize: '12px', fontWeight: '600' }}>{report.working}</span>
+                                                </td>
+                                                <td style={{ padding: '12px', textAlign: 'center' }}>
+                                                    <span style={{ background: '#fee2e2', color: '#991b1b', padding: '4px 8px', borderRadius: '4px', fontSize: '12px', fontWeight: '600' }}>{report.notWorking}</span>
+                                                </td>
+                                                <td style={{ padding: '12px', textAlign: 'center', fontWeight: '500' }}>{report.total}</td>
+                                                <td style={{ padding: '12px', textAlign: 'center' }}>
+                                                    <div style={{ width: '80px', height: '6px', background: '#e5e7eb', borderRadius: '3px', overflow: 'hidden', margin: '0 auto 4px' }}>
+                                                        <div style={{ width: `${report.percentage}%`, height: '100%', background: '#10b981' }}></div>
+                                                    </div>
+                                                    <span style={{ fontSize: '12px', fontWeight: '600', color: report.percentage > 75 ? '#16a34a' : report.percentage > 50 ? '#eab308' : '#dc2626' }}>{report.percentage}%</span>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                        {weeklyReport.length === 0 && (
+                                            <tr><td colSpan="6" style={{ padding: '20px', textAlign: 'center', color: '#9ca3af' }}>Koi data nahi hai.</td></tr>
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                );
+            };
+
+            return (
+                <div style={{ minHeight: '100vh', background: '#f3f4f6' }}>
+                    <div style={{ background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)', color: 'white', padding: '20px 24px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}>
+                        <div style={{ maxWidth: '1280px', margin: '0 auto', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <h1 style={{ fontSize: '28px', fontWeight: 'bold' }}>🏫 Assembly Attendance Tracker</h1>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', background: 'rgba(255,255,255,0.2)', padding: '8px 16px', borderRadius: '20px' }}>
+                                <span style={{ fontSize: '14px' }}>{isOnlineMode ? '🟢 Online' : '🔴 Offline'}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div style={{ background: 'white', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', marginBottom: '24px' }}>
+                        <div style={{ maxWidth: '1280px', margin: '0 auto', padding: '16px 24px', display: 'flex', gap: '16px' }}>
+                            {['dashboard', 'enrollment', 'monitoring', 'reports'].map(page => (
+                                <button key={page} onClick={() => setCurrentPage(page)} style={{
+                                    padding: '10px 20px', borderRadius: '6px', fontWeight: '600', border: 'none', cursor: 'pointer',
+                                    background: currentPage === page ? '#3b82f6' : '#f3f4f6', color: currentPage === page ? 'white' : '#4b5563', transition: 'all 0.3s'
+                                }}>
+                                    {page === 'dashboard' && '📊 Dashboard'}
+                                    {page === 'enrollment' && '📝 Enrollment'}
+                                    {page === 'monitoring' && '🎥 Monitor'}
+                                    {page === 'reports' && '📈 Reports'}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div style={{ maxWidth: '1280px', margin: '0 auto', paddingBottom: '40px' }}>
+                        {currentPage === 'dashboard' && <Dashboard />}
+                        {currentPage === 'enrollment' && <Enrollment />}
+                        {currentPage === 'monitoring' && <LiveMonitoring />}
+                        {currentPage === 'reports' && <Reports />}
+                    </div>
+                </div>
+            );
+        };
+
+        const RootApp = () => {
+            const [unlocked, setUnlocked] = useState(false);
+            if (window.location.protocol === 'file:') {
+                return <ServeOverHttpNotice />;
+            }
+            return unlocked ? <AssemblyTrackingApp /> : <LoginGate onUnlock={() => setUnlocked(true)} />;
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<RootApp />);
+    </script>
+</body>
+</html>
